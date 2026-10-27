@@ -1,0 +1,84 @@
+
+library(VGAM)
+library(dplyr)
+
+# Main-effects model
+model_ztnb <- vglm(
+  aba_days_12m ~ race_ethnicity + pay_type +
+    age_group + der_sex + pat_region,
+  family = posnegbinomial(),
+  data = df_analysis
+)
+
+# Race/ethnicity-by-insurance interaction model
+model_ztnb_int <- vglm(
+  aba_days_12m ~ race_ethnicity * pay_type +
+    age_group + der_sex + pat_region,
+  family = posnegbinomial(),
+  data = df_analysis
+)
+
+summary(model_ztnb)
+summary(model_ztnb_int)
+
+# Two-sided Wald tests for regression coefficients
+beta <- coef(model_ztnb, matrix = FALSE)
+se <- sqrt(diag(vcov(model_ztnb)))
+
+wald_results <- data.frame(
+  term = names(beta),
+  estimate = as.numeric(beta),
+  SE = as.numeric(se)
+) %>%
+  filter(
+    !grepl("^\\(Intercept\\)", term),
+    !grepl(":2$", term)
+  ) %>%
+  mutate(
+    z = estimate / SE,
+    p_value = 2 * pnorm(abs(z), lower.tail = FALSE),
+    IRR = exp(estimate),
+    CI_lower = exp(estimate - 1.96 * SE),
+    CI_upper = exp(estimate + 1.96 * SE),
+    significant = p_value < 0.05
+  )
+
+print(wald_results)
+
+
+interaction_names <- c(
+  "race_ethnicityHispanic:pay_typeMedicaid",
+  "race_ethnicityNon-Hispanic Black:pay_typeMedicaid",
+  "race_ethnicityNon-Hispanic Asian:pay_typeMedicaid",
+  "race_ethnicityNon-Hispanic Other:pay_typeMedicaid"
+)
+
+b <- coef(model_ztnb_int, matrix = FALSE)
+V <- vcov(model_ztnb_int)
+
+if (!all(interaction_names %in% names(b))) {
+  stop("Interaction coefficient names do not match the fitted model.")
+}
+
+b_int <- b[interaction_names]
+V_int <- V[interaction_names, interaction_names, drop = FALSE]
+
+wald_stat <- as.numeric(
+  t(b_int) %*% solve(V_int, b_int)
+)
+
+df_wald <- length(interaction_names)
+
+p_wald <- pchisq(
+  wald_stat,
+  df = df_wald,
+  lower.tail = FALSE
+)
+
+interaction_wald_results <- data.frame(
+  Wald_chisq = wald_stat,
+  df = df_wald,
+  p_value = p_wald
+)
+
+print(interaction_wald_results)
