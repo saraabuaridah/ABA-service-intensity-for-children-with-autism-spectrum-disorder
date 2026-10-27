@@ -1,0 +1,392 @@
+
+library(arrow)
+library(dplyr)
+library(data.table)
+
+aba_proc_codes <- c(
+  "97151", "97152", "97153", "97154", "97155",
+  "97156", "97157", "97158", "0362T", "0373T"
+)
+
+# Configure input and output directories.
+base_path <- Sys.getenv("CLAIMS_DATA_DIR")
+output_path <- Sys.getenv("CLAIMS_OUTPUT_DIR")
+
+if (!dir.exists(base_path) || !dir.exists(output_path)) {
+  stop("Set CLAIMS_DATA_DIR and CLAIMS_OUTPUT_DIR to existing directories.")
+}
+
+# Identify ABA recipients and retain their associated claims.
+patient_ids <- character()
+annual_files <- character()
+
+for (year in 2020:2025) {
+  year_path <- file.path(base_path, paste0("year=", year))
+  files <- list.files(
+    year_path,
+    pattern = "\\.parquet$",
+    full.names = TRUE
+  )
+
+  year_claims <- list()
+
+  for (file in files) {
+    claims <- arrow::read_parquet(file) %>%
+      as.data.frame() %>%
+      mutate(across(everything(), as.character))
+
+    current_aba_ids <- claims %>%
+      filter(proc_cde %in% aba_proc_codes) %>%
+      distinct(pat_id) %>%
+      pull(pat_id)
+
+    patient_ids <- union(patient_ids, current_aba_ids)
+
+    year_claims[[length(year_claims) + 1L]] <- claims %>%
+      filter(pat_id %in% patient_ids)
+  }
+
+  annual <- dplyr::bind_rows(year_claims)
+
+  annual_file <- file.path(
+    output_path,
+    paste0("ABA_claims_", year, ".csv")
+  )
+
+  data.table::fwrite(annual, annual_file)
+  annual_files <- c(annual_files, annual_file)
+}
+
+# Combine annual claims and identify unique patients.
+Aba_claims_all_years <- dplyr::bind_rows(
+  lapply(annual_files, function(path) {
+    data.table::fread(path, colClasses = "character") %>%
+      as.data.frame()
+  })
+)
+
+Aba_patients_ids <- Aba_claims_all_years %>%
+  distinct(pat_id)
+
+
+#define ABA patients
+
+Aba_patient_ids <- Aba_claims_all_years %>%
+  distinct(pat_id)
+
+# restrict ABA to those who have ASD
+
+ABA_patients_with_ASD_window <- Aba_patient_ids %>%
+  filter(pat_id %in% patients_with_ASD_window$pat_id)
+
+#Print counts
+
+total_ABA <- nrow(Aba_patient_ids)
+restricted_ABA <- nrow(ABA_patients_with_ASD_window)
+
+excluded <- total_ABA - restricted_ABA
+
+data.frame(
+  Total_ABA = total_ABA,
+  With_ASD_2021_2024 = restricted_ABA,
+  Excluded_No_ASD = excluded
+)
+
+
+
+#age groups f
+
+```{r}
+medicaid_patients_demographics <- medicaid_patients_demographics %>%
+  mutate(
+    age_group = case_when(
+      age_first_ABA >= 1  & age_first_ABA <= 5  ~ "1–5",
+      age_first_ABA >= 6  & age_first_ABA <= 11 ~ "6–11",
+      age_first_ABA >= 12 & age_first_ABA <= 17 ~ "12–17",
+      age_first_ABA >= 18 & age_first_ABA <= 22 ~ "18–22",
+      TRUE ~ NA_character_
+    )
+  )
+commercial_demographics <- commercial_demographics %>%
+  mutate(
+    age_group = case_when(
+      age_first_ABA >= 1  & age_first_ABA <= 5  ~ "1–5",
+      age_first_ABA >= 6  & age_first_ABA <= 11 ~ "6–11",
+      age_first_ABA >= 12 & age_first_ABA <= 17 ~ "12–17",
+      age_first_ABA >= 18 & age_first_ABA <= 22 ~ "18–22",
+      TRUE ~ NA_character_
+    )
+  )
+```
+
+
+
+
+#28. Table 1 
+```{r}
+
+# 1. Prepare data
+table1_df <- bind_rows(
+  medicaid_patients_demographics %>% mutate(pay_type = "Medicaid"),
+  commercial_demographics %>% mutate(pay_type = "Commercial")
+) %>%
+  filter(!is.na(age_group)) %>%   # safer than %in%
+  
+  # join sex
+  left_join(
+    Aba_patient_demographics %>%
+      dplyr::select(pat_id, der_sex),
+    by = "pat_id"
+  ) %>%
+  
+  # join race
+  left_join(
+    Aba_race_all_years %>%
+      dplyr::select(pat_id, race_ethnicity),
+    by = "pat_id"
+
+  )
+
+
+table1_df <- table1_df %>%
+  mutate(
+    race_ethnicity = dplyr::recode(race_ethnicity,
+      "1" = "Non-Hispanic White",
+      "2" = "Hispanic",
+      "3" = "Non-Hispanic Black",
+      "4" = "Non-Hispanic Asian",
+      "5" = "Non-Hispanic Other"
+    ),
+    race_ethnicity = factor(race_ethnicity,
+      levels = c(
+        "Non-Hispanic White",
+        "Hispanic",
+        "Non-Hispanic Black",
+        "Non-Hispanic Asian",
+        "Non-Hispanic Other",
+        "Unknown"
+      )
+    )
+  )
+# 2. Convert to factors (FIXED DASHES + SEX)
+table1_df <- table1_df %>%
+  mutate(
+    pay_type = factor(pay_type, levels = c("Medicaid", "Commercial")),
+    
+    age_group = factor(age_group,
+                       levels = c("1–5", "6–11", "12–17", "18–22")),
+    
+    der_sex = factor(der_sex.x),   
+    
+    race_ethnicity = dplyr::recode(as.character(race_ethnicity),
+      "1" = "Non-Hispanic White",
+      "2" = "Hispanic",
+      "3" = "Non-Hispanic Black",
+      "4" = "Non-Hispanic Asian",
+      "5" = "Non-Hispanic Other",
+      "Unknown" = "Unknown"
+    ),
+    
+    race_ethnicity = factor(race_ethnicity,
+      levels = c(
+        "Non-Hispanic White",
+        "Hispanic",
+        "Non-Hispanic Black",
+        "Non-Hispanic Asian",
+        "Non-Hispanic Other",
+        "Unknown"
+      )
+    )
+  )
+# 3. Add region
+table1_df <- table1_df %>%
+  mutate(pat_state = toupper(trimws(pat_state))) %>%
+  left_join(stcrosswalk, by = c("pat_state" = "stabbr")) %>%
+  mutate( region = dplyr::recode(cenregnm, "northeast" = "Northeast", "midwest" = "Midwest", "south" = "South", "west" = "West" ), region = factor(region, levels = c("Northeast", "Midwest", "South", "West") ) )
+
+# 4. Labels
+label(table1_df$age_group) <- "Age group"
+label(table1_df$der_sex) <- "Sex"
+label(table1_df$race_ethnicity) <- "Race and Ethnicity"
+label(table1_df$pay_type) <- "Insurance"
+label(table1_df$region) <- "US Region"
+
+#drop missing ethnicity
+table1_df <- table1_df %>%
+  filter(!is.na(race_ethnicity))
+
+# 5. Create Table 1
+table1(
+  ~ age_group + der_sex + region |
+    pay_type * race_ethnicity,
+  data = table1_df,
+  overall = c(left = "Total")
+)
+
+
+
+#30. Now we look at when was the first ASD diagnosis, then follow a year after that, and stop at july 2024 in order to be able to follow the visits until end of the data.
+
+Identifies ASD patients
+Finds their first diagnosis date (index)
+Keeps only those with 1-year follow-up
+Defines a 12-month window
+Counts ABA utilization within that window
+```{r}
+
+#1. Index the ASD diagnosis to be before July 2024, because the data ends at June 2025, we need to be able to follow up for the next 365 days on how many visits we got
+
+diag_cols <- paste0("diag", 1:12)
+
+Aba_claims_all_years <- Aba_claims_all_years %>%
+  mutate(
+    across(all_of(diag_cols), ~ gsub("\\.", "", .x))  # remove dots
+  )
+
+#2. Identify ASD index date
+
+asd_first_date <- Aba_claims_all_years %>%
+  filter(
+    if_any(all_of(diag_cols), ~ .x %in% ASD_diagnoses_code)
+  ) %>%
+  group_by(pat_id) %>%
+  summarise(
+    asd_index_date = min(from_dt),
+    .groups = "drop"
+  )
+
+#3. Follow up for one year
+max_date <- max(Aba_claims_all_years$from_dt, na.rm = TRUE)
+
+asd_first_date <- asd_first_date %>%
+  filter(asd_index_date <= max_date - days(365))
+
+
+#4. Define one year follow up window
+
+asd_window <- asd_first_date %>%
+  mutate(
+    end_date = asd_index_date + days(365)
+  )
+
+#5. Count the ABA claims within one year
+aba_visits_1yr <- Aba_claims_all_years %>%
+  inner_join(asd_window, by = "pat_id") %>%
+  filter(
+    from_dt >= asd_index_date &
+    from_dt <= end_date
+  ) %>%
+  group_by(pat_id) %>%
+  summarise(
+    visits_1yr = n_distinct(from_dt),
+    .groups = "drop"
+  )
+
+```
+
+
+
+#31. Filter the data for only commercially insured and Medicaid
+
+```{r}
+
+
+aba_visits_1yr <- Aba_claims_all_years %>%
+  
+  # join ASD window
+  inner_join(asd_window, by = "pat_id") %>%
+  
+  # join insurance (from your demographics)
+  left_join(
+    table1_df %>% dplyr::select(pat_id, pay_type),
+    by = "pat_id"
+  ) %>%
+  
+  # keep only Medicaid & Commercial
+  filter(pay_type %in% c("Medicaid", "Commercial")) %>%
+  
+  # keep claims within 1-year window
+  filter(
+    from_dt >= asd_index_date &
+    from_dt <= end_date
+  ) %>%
+  
+  group_by(pat_id) %>%
+  summarise(
+    visits_1yr = n_distinct(from_dt),
+    .groups = "drop"
+  )
+
+
+
+
+```
+
+#32. Recreate Table 1 for patients who had one year of follow up
+
+```{r}
+
+#1. Create the table data frame
+
+# 1. Create the table data frame
+table1_1yr_df <- table1_df %>%
+  
+  # keep only patients in ASD cohort (with valid index date)
+  inner_join(asd_window, by = "pat_id") %>%
+  
+  # keep only Medicaid & Commercial
+  filter(pay_type %in% c("Medicaid", "Commercial")) %>%
+  
+  # remove unknown race
+  filter(race_ethnicity != "Unspecified/Unknown")
+
+
+# 2. Create labels (UPDATED AGE GROUPS)
+table1_1yr_df <- table1_1yr_df %>%
+  mutate(
+    pay_type = factor(pay_type, levels = c("Medicaid", "Commercial")),
+    
+    age_group = factor(age_group,
+                       levels = c("1–5", "6–11", "12–17", "18–22")),
+    
+    der_sex = factor(der_sex),
+    
+    race_ethnicity = factor(race_ethnicity,
+      levels = c(
+        "Non-Hispanic White",
+        "Hispanic",
+        "Non-Hispanic Black",
+        "Non-Hispanic Asian",
+        "Non-Hispanic Other"
+      )
+    ),
+    
+    region = factor(region,
+      levels = c("Northeast", "Midwest", "South", "West")
+    )
+  )
+
+
+# 3. Print table 1
+library(table1)
+
+table1(
+  ~ age_group + der_sex + region |
+    pay_type * race_ethnicity,
+  data = table1_1yr_df,
+  overall = c(left = "Total")
+)
+
+
+t1 <- table1(
+  ~ age_group + der_sex + region |
+    pay_type * race_ethnicity,
+  data = table1_1yr_df,
+  overall = c(left = "Total")
+)
+
+t1_df <- as.data.frame(t1)
+
+# Save to Excel
+library(openxlsx)
+write.xlsx(t1_df, "Table1_ABA.xlsx", rowNames = FALSE)
